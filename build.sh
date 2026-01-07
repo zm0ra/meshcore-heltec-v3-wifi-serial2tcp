@@ -403,12 +403,20 @@ apply_patches() {
     
     cd "$REPO_DIR"
     
-    # Apply each patch, but don't bail if already applied
+    # Apply each patch non-interactively.
+    # - If it applies cleanly: apply it.
+    # - If it is already applied: skip it.
+    # - Otherwise: fail (avoid interactive `patch` prompts like "File to patch:").
     for patch_file in "$PATCHES_DIR"/*.patch; do
         if [ -f "$patch_file" ]; then
             log_info "Applying $(basename "$patch_file")..."
-            if ! patch -p1 < "$patch_file"; then
-                log_warn "Patch $(basename "$patch_file") failed (already applied?) - continuing"
+            if git apply --check "$patch_file" >/dev/null 2>&1; then
+                git apply "$patch_file"
+            elif git apply -R --check "$patch_file" >/dev/null 2>&1; then
+                log_warn "Patch $(basename "$patch_file") already applied - skipping"
+            else
+                log_error "Patch $(basename "$patch_file") failed to apply"
+                exit 1
             fi
         fi
     done

@@ -41,9 +41,9 @@ index 7cb74f8..b5f5f3f 100644
 +      display.setColor(connected ? DisplayDriver::GREEN : DisplayDriver::RED);
 +      display.print(connected ? "connected" : "offline");
 +
-+      const char *ssid = connected ? WiFi.SSID().c_str() : WIFI_SSID;
++      String ssid_str = connected ? WiFi.SSID() : String(WIFI_SSID);
 +      char ssid_filtered[64];
-+      display.translateUTF8ToBlocks(ssid_filtered, ssid, sizeof(ssid_filtered));
++      display.translateUTF8ToBlocks(ssid_filtered, ssid_str.c_str(), sizeof(ssid_filtered));
 +
 +      display.setColor(DisplayDriver::LIGHT);
 +      display.drawTextEllipsized(0, 31, display.width(), "SSID:");
@@ -63,9 +63,6 @@ index 7cb74f8..b5f5f3f 100644
 +      display.setColor(DisplayDriver::GREEN);
 +      display.print(ipbuf);
 +
-+      display.setColor(DisplayDriver::LIGHT);
-+      display.setTextSize(1);
-+      display.drawTextCentered(display.width() / 2, 64 - 11, "cycle: click / prev: dbl");
 +#endif
      } else if (_page == HomePage::ADVERT) {
        display.setColor(DisplayDriver::GREEN);
