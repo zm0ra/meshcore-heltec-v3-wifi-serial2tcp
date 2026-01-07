@@ -68,6 +68,10 @@ BUILD_ROLE="companion"
 # Upload port (leave empty to auto-detect)
 UPLOAD_PORT=""
 
+# Upload speed (PlatformIO/esptool). Some USB-UART adapters/boards are unstable at high baud.
+# Common stable values: 115200, 230400, 460800
+UPLOAD_SPEED=""
+
 # PlatformIO environment
 PIO_ENV="Heltec_v3_companion_radio_wifi"
 
@@ -119,6 +123,8 @@ ADVERT_NAME="${ADVERT_NAME:-Heltec V3 WiFi}"
 ADVERT_LAT=${ADVERT_LAT:-0.0}
 ADVERT_LON=${ADVERT_LON:-0.0}
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-password}"
+
+UPLOAD_SPEED="${UPLOAD_SPEED:-115200}"
 
 # PlatformIO environment (ensure correct default after config load)
 PIO_ENV="${PIO_ENV:-Heltec_v3_companion_radio_wifi}"
@@ -493,7 +499,11 @@ upload_firmware() {
     log_info "Uploading firmware to ${port}..."
     
     cd "$REPO_DIR"
-    pio run -e "$PIO_ENV" -t upload --upload-port "$port"
+    if [ -n "$UPLOAD_SPEED" ]; then
+        pio run -e "$PIO_ENV" -t upload --upload-port "$port" --upload-speed "$UPLOAD_SPEED"
+    else
+        pio run -e "$PIO_ENV" -t upload --upload-port "$port"
+    fi
     
     log_success "Firmware uploaded successfully"
 }
