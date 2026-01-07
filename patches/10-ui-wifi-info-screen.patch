@@ -1,20 +1,19 @@
 diff --git a/examples/companion_radio/ui-new/UITask.cpp b/examples/companion_radio/ui-new/UITask.cpp
-index 7cb74f8..b5f5f3f 100644
+index 59a1b2d..a57c2d7 100644
 --- a/examples/companion_radio/ui-new/UITask.cpp
 +++ b/examples/companion_radio/ui-new/UITask.cpp
-@@ -2,6 +2,10 @@
- #include "UITask.h"
- #include <helpers/TxtDataHelpers.h>
+@@ -3,6 +3,10 @@
  #include "../MyMesh.h"
  #include "target.h"
-+
+ 
 +#ifdef WIFI_SSID
 +  #include <WiFi.h>
 +#endif
- 
++
  #ifndef AUTO_OFF_MILLIS
    #define AUTO_OFF_MILLIS     15000   // 15 seconds
-@@ -80,6 +84,9 @@ class HomeScreen : public UIScreen {
+ #endif
+@@ -78,6 +82,9 @@ class HomeScreen : public UIScreen {
      RECENT,
      RADIO,
      BLUETOOTH,
@@ -24,9 +23,7 @@ index 7cb74f8..b5f5f3f 100644
      ADVERT,
  #if ENV_INCLUDE_GPS == 1
      GPS,
-@@ -250,6 +257,42 @@ public:
-       display.drawXbm((display.width() - 32) / 2, 18,
-           _task->isSerialEnabled() ? bluetooth_on : bluetooth_off,
+@@ -253,6 +260,39 @@ public:
            32, 32);
        display.setTextSize(1);
        display.drawTextCentered(display.width() / 2, 64 - 11, "toggle: " PRESS_LABEL);
@@ -62,10 +59,9 @@ index 7cb74f8..b5f5f3f 100644
 +      display.print("IP: ");
 +      display.setColor(DisplayDriver::GREEN);
 +      display.print(ipbuf);
-+
 +#endif
      } else if (_page == HomePage::ADVERT) {
        display.setColor(DisplayDriver::GREEN);
        display.drawXbm((display.width() - 32) / 2, 18, advert_icon, 32, 32);
        display.drawTextCentered(display.width() / 2, 64 - 11, "advert: " PRESS_LABEL);
-*** End Patch
+     } else if (_page == HomePage::ADVERT) {
