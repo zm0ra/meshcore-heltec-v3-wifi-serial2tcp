@@ -153,6 +153,29 @@ validate_config() {
         log_error "WIFI_PASSWORD is required"
         missing=1
     fi
+
+    if [ -z "$PIO_ENV" ]; then
+        log_error "PIO_ENV is required (expected Heltec_v3_companion_radio_wifi or Heltec_v3_repeater)"
+        missing=1
+    fi
+
+    # Guardrail: this repo is Heltec V3 specific. If a Xiao env is selected via config.env,
+    # PlatformIO will happily build it, but the resulting firmware will not work on Heltec.
+    if [[ "$PIO_ENV" == *"Xiao"* ]] || [[ "$PIO_ENV" == *"xiao"* ]]; then
+        log_error "PIO_ENV points to a Xiao environment (${PIO_ENV}). Set PIO_ENV=Heltec_v3_companion_radio_wifi (or Heltec_v3_repeater)."
+        missing=1
+    fi
+
+    if [ "$BUILD_ROLE" = "repeater" ]; then
+        if [[ "$PIO_ENV" != "Heltec_v3_repeater"* ]]; then
+            log_error "BUILD_ROLE=repeater but PIO_ENV=${PIO_ENV}. Expected Heltec_v3_repeater*"
+            missing=1
+        fi
+    else
+        if [[ "$PIO_ENV" != "Heltec_v3_companion_radio_wifi"* ]]; then
+            log_warn "BUILD_ROLE=companion but PIO_ENV=${PIO_ENV}. Expected Heltec_v3_companion_radio_wifi*"
+        fi
+    fi
     
     if [ "$BUILD_ROLE" = "repeater" ]; then
         if [ -z "$ADMIN_PASSWORD" ]; then
@@ -380,10 +403,16 @@ configure_build_flags() {
     sed -i.bak "s|-D UI_RECENT_LIST_SIZE=[^ ]*|-D UI_RECENT_LIST_SIZE=${UI_RECENT_LIST_SIZE}|" "$config_file"
 
     # Debug
-    sed -i.bak "s|-D MESH_PACKET_LOGGING=[^ ]*|-D MESH_PACKET_LOGGING=${MESH_PACKET_LOGGING}|" "$config_file"
-    sed -i.bak "s|-D MESH_DEBUG=[^ ]*|-D MESH_DEBUG=${MESH_DEBUG}|" "$config_file"
-    sed -i.bak "s|-D BRIDGE_DEBUG=[^ ]*|-D BRIDGE_DEBUG=${BRIDGE_DEBUG}|" "$config_file"
-    sed -i.bak "s|-D BLE_DEBUG_LOGGING=[^ ]*|-D BLE_DEBUG_LOGGING=${BLE_DEBUG_LOGGING}|" "$config_file"
+    # MeshCore's platformio.ini often has these commented out by default (prefixed with ';'),
+    # so we handle both commented and uncommented cases.
+    sed -E -i.bak "s|^[[:space:]]*;[[:space:]]*-D[[:space:]]+MESH_PACKET_LOGGING=[^ ]+|  -D MESH_PACKET_LOGGING=${MESH_PACKET_LOGGING}|" "$config_file"
+    sed -E -i.bak "s|^[[:space:]]*-D[[:space:]]+MESH_PACKET_LOGGING=[^ ]+|  -D MESH_PACKET_LOGGING=${MESH_PACKET_LOGGING}|" "$config_file"
+    sed -E -i.bak "s|^[[:space:]]*;[[:space:]]*-D[[:space:]]+MESH_DEBUG=[^ ]+|  -D MESH_DEBUG=${MESH_DEBUG}|" "$config_file"
+    sed -E -i.bak "s|^[[:space:]]*-D[[:space:]]+MESH_DEBUG=[^ ]+|  -D MESH_DEBUG=${MESH_DEBUG}|" "$config_file"
+    sed -E -i.bak "s|^[[:space:]]*;[[:space:]]*-D[[:space:]]+BRIDGE_DEBUG=[^ ]+|  -D BRIDGE_DEBUG=${BRIDGE_DEBUG}|" "$config_file"
+    sed -E -i.bak "s|^[[:space:]]*-D[[:space:]]+BRIDGE_DEBUG=[^ ]+|  -D BRIDGE_DEBUG=${BRIDGE_DEBUG}|" "$config_file"
+    sed -E -i.bak "s|^[[:space:]]*;[[:space:]]*-D[[:space:]]+BLE_DEBUG_LOGGING=[^ ]+|  -D BLE_DEBUG_LOGGING=${BLE_DEBUG_LOGGING}|" "$config_file"
+    sed -E -i.bak "s|^[[:space:]]*-D[[:space:]]+BLE_DEBUG_LOGGING=[^ ]+|  -D BLE_DEBUG_LOGGING=${BLE_DEBUG_LOGGING}|" "$config_file"
 
     # Identity
     sed -i.bak "s|-D ADVERT_NAME='\"[^\"]*\"'|-D ADVERT_NAME='\"${ADVERT_NAME}\"'|" "$config_file"
