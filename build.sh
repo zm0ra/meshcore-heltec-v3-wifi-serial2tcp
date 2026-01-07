@@ -11,6 +11,9 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
 set_platformio_env_option() {
     local ini_file="$1"
     local env_name="$2"
@@ -27,15 +30,58 @@ import sys
 from pathlib import Path
 
 ini_path = Path(sys.argv[1])
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+env_name = sys.argv[2]
+key = sys.argv[3]
+value = sys.argv[4]
+
+if not ini_path.exists():
+    raise SystemExit(f"INI file not found: {ini_path}")
+
+text = ini_path.read_text(encoding="utf-8", errors="replace")
+lines = text.splitlines(keepends=True)
+
+header = f"[env:{env_name}]"
+
+try:
+    start = next(i for i, ln in enumerate(lines) if ln.strip() == header)
+except StopIteration:
+    raise SystemExit(f"Environment section not found: {header}")
+
+end = None
+for i in range(start + 1, len(lines)):
+    if lines[i].lstrip().startswith("[") and lines[i].strip().endswith("]"):
+        end = i
+        break
+if end is None:
+    end = len(lines)
+
+key_re = re.compile(rf"^\s*{re.escape(key)}\s*=.*$")
+replacement = f"{key} = {value}\n"
+
+replaced = False
+for i in range(start + 1, end):
+    if key_re.match(lines[i]):
+        lines[i] = replacement
+        replaced = True
+        break
+
+if not replaced:
+    insert_at = end
+    if insert_at > 0 and not lines[insert_at - 1].endswith("\n"):
+        lines[insert_at - 1] = lines[insert_at - 1] + "\n"
+    lines.insert(insert_at, replacement)
+
+ini_path.write_text("".join(lines), encoding="utf-8")
+PY
+
+}
+
 
 # Script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
 PATCHES_DIR="${SCRIPT_DIR}/patches"
 DEFAULT_WORK_DIR="${SCRIPT_DIR}/build"
-
 # Load configuration
 if [ ! -f "$CONFIG_FILE" ]; then
     echo -e "${RED}[!] Configuration file not found: ${CONFIG_FILE}${NC}"
