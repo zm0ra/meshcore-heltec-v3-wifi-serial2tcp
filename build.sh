@@ -90,6 +90,10 @@ WIFI_PASSWORD="${WIFI_PASSWORD:-YourPassword}"
 TCP_PORT=${TCP_PORT:-5002}
 WIFI_DEBUG_LOGGING=${WIFI_DEBUG_LOGGING:-1}
 
+# Defaults for repository source
+REPO_URL="${REPO_URL:-https://github.com/meshcore-dev/MeshCore}"
+REPO_BRANCH="${REPO_BRANCH:-main}"
+
 LORA_FREQ=${LORA_FREQ:-869.618}
 LORA_BW=${LORA_BW:-62.5}
 LORA_SF=${LORA_SF:-8}
