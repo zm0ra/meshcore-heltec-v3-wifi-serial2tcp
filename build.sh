@@ -181,8 +181,16 @@ detect_upload_port() {
         return
     fi
 
-    # Try to auto-detect USB serial device (prefer usbmodem*, exclude debug-console)
+    # Priority 1: usbserial devices (CH340, CP210x, FTDI)
     local port
+    port=$(ls /dev/cu.usbserial* 2>/dev/null | head -n1)
+
+    if [ -n "$port" ]; then
+        echo "$port"
+        return
+    fi
+
+    # Priority 2: usbmodem devices (native USB CDC)
     port=$(pio device list | grep -Eo '/dev/cu\.usbmodem[^ ]+' | head -n1)
 
     if [ -n "$port" ]; then
@@ -190,8 +198,8 @@ detect_upload_port() {
         return
     fi
 
-    # Fallback: any cu device except debug-console
-    port=$(pio device list | grep -Eo '/dev/cu\.[^ ]+' | grep -v debug-console | head -n1)
+    # Priority 3: Any other cu device except Bluetooth and debug-console
+    port=$(pio device list | grep -Eo '/dev/cu\.[^ ]+' | grep -v -E '(debug-console|Bluetooth)' | head -n1)
 
     if [ -n "$port" ]; then
         echo "$port"
