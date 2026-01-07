@@ -10,6 +10,23 @@ set -e  # Exit on error
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+
+set_platformio_env_option() {
+    local ini_file="$1"
+    local env_name="$2"
+    local option_key="$3"
+    local option_value="$4"
+
+    if [ -z "$option_value" ]; then
+        return
+    fi
+
+    python3 - "$ini_file" "$env_name" "$option_key" "$option_value" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+ini_path = Path(sys.argv[1])
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
@@ -55,6 +72,7 @@ MESH_DEBUG=1
 BRIDGE_DEBUG=0
 BLE_DEBUG_LOGGING=0
 
+}
 # Identity / advertising
 ADVERT_NAME="Heltec V3 WiFi"
 ADVERT_LAT=0.0
@@ -393,6 +411,9 @@ configure_build_flags() {
     sed -i.bak "s|-D TCP_PORT=[^ ]*|-D TCP_PORT=${TCP_PORT}|" "$config_file"
     sed -i.bak "s|-D WIFI_DEBUG_LOGGING=[^ ]*|-D WIFI_DEBUG_LOGGING=${WIFI_DEBUG_LOGGING}|" "$config_file"
 
+    # Upload stability
+    set_platformio_env_option "$config_file" "$PIO_ENV" "upload_speed" "$UPLOAD_SPEED"
+
     # LoRa
     sed -i.bak "s|-D LORA_FREQ=[^ ]*|-D LORA_FREQ=${LORA_FREQ}|" "$config_file"
     sed -i.bak "s|-D LORA_BW=[^ ]*|-D LORA_BW=${LORA_BW}|" "$config_file"
@@ -499,11 +520,7 @@ upload_firmware() {
     log_info "Uploading firmware to ${port}..."
     
     cd "$REPO_DIR"
-    if [ -n "$UPLOAD_SPEED" ]; then
-        pio run -e "$PIO_ENV" -t upload --upload-port "$port" --upload-speed "$UPLOAD_SPEED"
-    else
-        pio run -e "$PIO_ENV" -t upload --upload-port "$port"
-    fi
+    pio run -e "$PIO_ENV" -t upload --upload-port "$port"
     
     log_success "Firmware uploaded successfully"
 }
