@@ -1,0 +1,14 @@
+# Build artifacts
+build/
+.pio/
+*.pyc
+__pycache__/
+.DS_Store
+
+# Configuration
+config.env
+
+# Temporary
+*.bak
+*.tmp
+*.swp
