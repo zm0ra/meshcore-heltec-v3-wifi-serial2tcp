@@ -398,29 +398,57 @@ clone_repository() {
     log_success "Repository cloned"
 }
 
+apply_patch_file() {
+    local patch_file="$1"
+    log_info "Applying $(basename "$patch_file")..."
+    if git apply --check "$patch_file" >/dev/null 2>&1; then
+        git apply "$patch_file"
+    elif git apply -R --check "$patch_file" >/dev/null 2>&1; then
+        log_warn "Patch $(basename "$patch_file") already applied - skipping"
+    else
+        log_error "Patch $(basename "$patch_file") failed to apply"
+        exit 1
+    fi
+}
+
 apply_patches() {
     log_info "Applying code patches..."
-    
+
     cd "$REPO_DIR"
-    
-    # Apply each patch non-interactively.
-    # - If it applies cleanly: apply it.
-    # - If it is already applied: skip it.
-    # - Otherwise: fail (avoid interactive `patch` prompts like "File to patch:").
-    for patch_file in "$PATCHES_DIR"/*.patch; do
+
+    # Apply patches non-interactively.
+    # IMPORTANT: apply only patches relevant to the selected BUILD_ROLE to avoid
+    # unrelated patch failures when upstream MeshCore changes.
+    local patch_files=()
+
+    if [ "$BUILD_ROLE" = "repeater" ]; then
+        patch_files=(
+            "$PATCHES_DIR"/04-platformio-base.patch
+            "$PATCHES_DIR"/06-simple-repeater-platformio.patch
+            "$PATCHES_DIR"/07-simple-repeater-wifi-tcp.patch
+            "$PATCHES_DIR"/07b-simple-repeater-wifi-tcp-header.patch
+            "$PATCHES_DIR"/08-add-wifi-macros-defaults.patch
+            "$PATCHES_DIR"/09-simple-repeater-tcp-console-header.patch
+            "$PATCHES_DIR"/09b-simple-repeater-tcp-console.patch
+        )
+    else
+        patch_files=(
+            "$PATCHES_DIR"/01-mymesh-header.patch
+            "$PATCHES_DIR"/02-mymesh-implementation.patch
+            "$PATCHES_DIR"/04-platformio-base.patch
+            "$PATCHES_DIR"/10-ui-wifi-info-screen.patch
+        )
+    fi
+
+    for patch_file in "${patch_files[@]}"; do
         if [ -f "$patch_file" ]; then
-            log_info "Applying $(basename "$patch_file")..."
-            if git apply --check "$patch_file" >/dev/null 2>&1; then
-                git apply "$patch_file"
-            elif git apply -R --check "$patch_file" >/dev/null 2>&1; then
-                log_warn "Patch $(basename "$patch_file") already applied - skipping"
-            else
-                log_error "Patch $(basename "$patch_file") failed to apply"
-                exit 1
-            fi
+            apply_patch_file "$patch_file"
+        else
+            log_error "Missing patch file: $(basename "$patch_file")"
+            exit 1
         fi
     done
-    
+
     log_success "Patches applied"
 }
 
