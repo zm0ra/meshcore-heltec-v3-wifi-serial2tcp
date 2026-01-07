@@ -116,6 +116,9 @@ ADVERT_LAT=${ADVERT_LAT:-0.0}
 ADVERT_LON=${ADVERT_LON:-0.0}
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-password}"
 
+# PlatformIO environment (ensure correct default after config load)
+PIO_ENV="${PIO_ENV:-Heltec_v3_companion_radio_wifi}"
+
 # Allow overriding work directory via env or config
 WORK_DIR="${WORK_DIR:-$DEFAULT_WORK_DIR}"
 REPO_DIR="${REPO_DIR:-${WORK_DIR}/meshcore-firmware}"
