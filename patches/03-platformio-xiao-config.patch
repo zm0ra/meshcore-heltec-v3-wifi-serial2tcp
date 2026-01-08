@@ -1,16 +1,16 @@
-diff --git a/variants/xiao_s3_wio/platformio.ini b/variants/xiao_s3_wio/platformio.ini
+diff --git a/variants/heltec_v3/platformio.ini b/variants/heltec_v3/platformio.ini
 index 8979edc..b2a6c82 100644
---- a/variants/xiao_s3_wio/platformio.ini
-+++ b/variants/xiao_s3_wio/platformio.ini
-@@ -210,3 +210,46 @@ build_flags =
+--- a/variants/heltec_v3/platformio.ini
++++ b/variants/heltec_v3/platformio.ini
+@@ -100,3 +100,46 @@ build_flags =
  lib_deps =
-   ${Xiao_S3_WIO.lib_deps}
+   ${Heltec_lora32_v3.lib_deps}
    ${esp32_ota.lib_deps}
 +
-+[env:Xiao_S3_WIO_companion_radio_wifi]
-+extends = Xiao_S3_WIO
++[env:Heltec_v3_companion_radio_wifi]
++extends = Heltec_lora32_v3
 +build_flags =
-+  ${Xiao_S3_WIO.build_flags}
++  ${Heltec_lora32_v3.build_flags}
 +  -I examples/companion_radio/ui-new
 +  -D MAX_CONTACTS=350
 +  -D MAX_GROUP_CHANNELS=40
@@ -32,18 +32,18 @@ index 8979edc..b2a6c82 100644
 +  -D UI_RECENT_LIST_SIZE=4
 +  -D BRIDGE_DEBUG=0
 +  -D BLE_DEBUG_LOGGING=0
-+  -D ADVERT_NAME='"XiaoS3 WiFi"'
++  -D ADVERT_NAME='"Heltec V3 WiFi"'
 +  -D ADVERT_LAT=0.0
 +  -D ADVERT_LON=0.0
 +  -D ADMIN_PASSWORD='"password"'
-+build_src_filter = ${Xiao_S3_WIO.build_src_filter}
++build_src_filter = ${Heltec_lora32_v3.build_src_filter}
 +  +<helpers/ui/SSD1306Display.cpp>
 +  +<helpers/esp32/*.cpp>
 +  +<helpers/ui/MomentaryButton.cpp>
 +  +<../examples/companion_radio/*.cpp>
 +  +<../examples/companion_radio/ui-new/*.cpp>
 +lib_deps =
-+  ${Xiao_S3_WIO.lib_deps}
++  ${Heltec_lora32_v3.lib_deps}
 +  esphome/AsyncTCP-esphome@^2.1.3
 +  ottowinter/ESPAsyncWebServer-esphome@^3.1.0
 +  file://arch/esp32/AsyncElegantOTA

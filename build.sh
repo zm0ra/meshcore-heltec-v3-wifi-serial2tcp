@@ -118,7 +118,6 @@ MESH_DEBUG=1
 BRIDGE_DEBUG=0
 BLE_DEBUG_LOGGING=0
 
-}
 # Identity / advertising
 ADVERT_NAME="Heltec V3 WiFi"
 ADVERT_LAT=0.0
@@ -140,7 +139,7 @@ UPLOAD_SPEED=""
 PIO_ENV="Heltec_v3_companion_radio_wifi"
 
 # Git repository
-REPO_URL="https://github.com/meshcore-dev/MeshCore"
+REPO_URL="https://github.com/ripplebiz/MeshCore"
 REPO_BRANCH="main"
 
 # Optional: override build directory (default: ./build)
@@ -159,7 +158,7 @@ TCP_PORT=${TCP_PORT:-5002}
 WIFI_DEBUG_LOGGING=${WIFI_DEBUG_LOGGING:-1}
 
 # Defaults for repository source
-REPO_URL="${REPO_URL:-https://github.com/meshcore-dev/MeshCore}"
+REPO_URL="${REPO_URL:-https://github.com/ripplebiz/MeshCore}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 
 LORA_FREQ=${LORA_FREQ:-869.618}

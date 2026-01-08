@@ -1,15 +1,10 @@
-diff --git a/variants/xiao_s3_wio/XiaoS3WIOBoard.h b/variants/xiao_s3_wio/XiaoS3WIOBoard.h
+diff --git a/variants/heltec_v3/HeltecV3Board.h b/variants/heltec_v3/HeltecV3Board.h
 index 7ae06a3..05e5589 100644
---- a/variants/xiao_s3_wio/XiaoS3WIOBoard.h
-+++ b/variants/xiao_s3_wio/XiaoS3WIOBoard.h
-@@ -10,4 +10,10 @@ public:
-   const char* getManufacturerName() const override {
-     return "Xiao S3 WIO";
-   }
+--- a/variants/heltec_v3/HeltecV3Board.h
++++ b/variants/heltec_v3/HeltecV3Board.h
+@@ -98,0 +98,6 @@ public:
 +
- };
-+
-+// LED polarity for Xiao S3 WIO
++// LED polarity for Heltec V3
 +#ifndef LED_STATE_ON
 +#define LED_STATE_ON HIGH
 +#endif
