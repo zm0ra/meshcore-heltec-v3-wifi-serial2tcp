@@ -1,20 +1,28 @@
-# Start here
+# Start Here
 
-## Quick Build
+## Quick path
 
 ```bash
-# 1. Edit WiFi settings
+# 1. Clone and configure
+git clone https://github.com/zm0ra/meshcore-heltec-v3-wifi-serial2tcp.git
+cd meshcore-heltec-v3-wifi-serial2tcp
 cp config.env.example config.env
-nano config.env    # Set WIFI_SSID and WIFI_PASSWORD
+nano config.env
 
-# 2. Build and upload
-./build.sh --build --upload
+# 2. Build and flash the companion
+./install.sh
 
-# 3. Monitor
-pio device monitor -b 115200
+# 3. Or keep the monitor open after flashing
+./install.sh --monitor
 
-# 4. Find device IP in serial output, then connect:
+# 4. Test the raw bridge
 python3 mesh_client.py <device-ip> 5002
 ```
 
-See [README.md](README.md) for detailed documentation.
+Default companion ports:
+
+- `5000` – native MeshCore WiFi interface
+- `5001` – text console
+- `5002` – raw RS232Bridge bridge
+
+See [README.md](README.md) for repeater builds, manual build commands, and troubleshooting.

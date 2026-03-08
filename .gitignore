@@ -4,6 +4,7 @@ build/
 *.pyc
 __pycache__/
 .DS_Store
+build-new/
 
 # Configuration
 config.env
@@ -12,3 +13,7 @@ config.env
 *.bak
 *.tmp
 *.swp
+
+# Logs
+*.log
+test-*.log

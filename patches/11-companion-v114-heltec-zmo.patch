@@ -1,0 +1,827 @@
+diff --git a/examples/companion_radio/MyMesh.cpp b/examples/companion_radio/MyMesh.cpp
+index 1f71a9bc..c19c6941 100644
+--- a/examples/companion_radio/MyMesh.cpp
++++ b/examples/companion_radio/MyMesh.cpp
+@@ -282,6 +282,9 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
+ 
+     _serial->writeFrame(out_frame, i);
+   }
++
++  sendRS232BridgeFrameToTcp(raw, len);
++  dumpHexLine("RAW", raw, len);
+ }
+ 
+ bool MyMesh::isAutoAddEnabled() const {
+@@ -501,12 +504,18 @@ void MyMesh::onMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t
+                            const char *text) {
+   markConnectionActive(from); // in case this is from a server, and we have a connection
+   queueMessage(from, TXT_TYPE_PLAIN, pkt, sender_timestamp, NULL, 0, text);
++
++  logPacketSummary(pkt, "MSG");
++  sendPacketToTcpClients(pkt);
+ }
+ 
+ void MyMesh::onCommandDataRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
+                                const char *text) {
+   markConnectionActive(from); // in case this is from a server, and we have a connection
+   queueMessage(from, TXT_TYPE_CLI_DATA, pkt, sender_timestamp, NULL, 0, text);
++
++  logPacketSummary(pkt, "CMD");
++  sendPacketToTcpClients(pkt);
+ }
+ 
+ void MyMesh::onSignedMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
+@@ -515,6 +524,9 @@ void MyMesh::onSignedMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uin
+   // from.sync_since change needs to be persisted
+   dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+   queueMessage(from, TXT_TYPE_SIGNED_PLAIN, pkt, sender_timestamp, sender_prefix, 4, text);
++
++  logPacketSummary(pkt, "SIGNED");
++  sendPacketToTcpClients(pkt);
+ }
+ 
+ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packet *pkt, uint32_t timestamp,
+@@ -553,6 +565,9 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
+     if (_ui) _ui->notify(UIEventType::channelMessage);
+ #endif
+   }
++
++  logPacketSummary(pkt, "CHAN");
++  sendPacketToTcpClients(pkt);
+ #ifdef DISPLAY_CLASS
+   // Get the channel name from the channel index
+   const char *channel_name = "Unknown";
+@@ -808,6 +823,13 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
+   dirty_contacts_expiry = 0;
+   memset(advert_paths, 0, sizeof(advert_paths));
+   memset(send_scope.key, 0, sizeof(send_scope.key));
++  _console_server = NULL;
++  _console_cmd_len = 0;
++  _console_cmd[0] = 0;
++  _raw_packet_server = NULL;
++  for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
++    _raw_rx_pos[i] = 0;
++  }
+ 
+   // defaults
+   memset(&_prefs, 0, sizeof(_prefs));
+@@ -1821,173 +1843,153 @@ void MyMesh::enterCLIRescue() {
+   Serial.println("========= CLI Rescue =========");
+ }
+ 
+-void MyMesh::checkCLIRescueCmd() {
+-  int len = strlen(cli_command);
+-  while (Serial.available() && len < sizeof(cli_command)-1) {
+-    char c = Serial.read();
+-    if (c != '\n') {
+-      cli_command[len++] = c;
+-      cli_command[len] = 0;
++void MyMesh::processConsoleCommand(Stream& out, char* command) {
++  if (memcmp(command, "set ", 4) == 0) {
++    const char* config = &command[4];
++    if (memcmp(config, "pin ", 4) == 0) {
++      _prefs.ble_pin = atoi(&config[4]);
++      savePrefs();
++      out.printf("  > pin is now %06d\n", _prefs.ble_pin);
++    } else {
++      out.printf("  Error: unknown config: %s\n", config);
+     }
+-    Serial.print(c);  // echo
+-  }
+-  if (len == sizeof(cli_command)-1) {  // command buffer full
+-    cli_command[sizeof(cli_command)-1] = '\r';
+-  }
+-
+-  if (len > 0 && cli_command[len - 1] == '\r') {  // received complete line
+-    cli_command[len - 1] = 0;  // replace newline with C string null terminator
+-
+-    if (memcmp(cli_command, "set ", 4) == 0) {
+-      const char* config = &cli_command[4];
+-      if (memcmp(config, "pin ", 4) == 0) {
+-        _prefs.ble_pin = atoi(&config[4]);
+-        savePrefs();
+-        Serial.printf("  > pin is now %06d\n", _prefs.ble_pin);
+-      } else {
+-        Serial.printf("  Error: unknown config: %s\n", config);
+-      }
+-    } else if (strcmp(cli_command, "rebuild") == 0) {
+-      bool success = _store->formatFileSystem();
+-      if (success) {
+-        _store->saveMainIdentity(self_id);
+-        savePrefs();
+-        saveContacts();
+-        saveChannels();
+-        Serial.println("  > erase and rebuild done");
+-      } else {
+-        Serial.println("  Error: erase failed");
+-      }
+-    } else if (strcmp(cli_command, "erase") == 0) {
+-      bool success = _store->formatFileSystem();
+-      if (success) {
+-        Serial.println("  > erase done");
+-      } else {
+-        Serial.println("  Error: erase failed");
+-      }
+-    } else if (memcmp(cli_command, "ls", 2) == 0) {
+-
+-      // get path from command e.g: "ls /adafruit"
+-      const char *path = &cli_command[3];
+-
+-      bool is_fs2 = false;
+-      if (memcmp(path, "UserData/", 9) == 0) {
+-        path += 8; // skip "UserData"
+-      } else if (memcmp(path, "ExtraFS/", 8) == 0) {
+-        path += 7; // skip "ExtraFS"
+-        is_fs2 = true;
+-      }
+-      Serial.printf("Listing files in %s\n", path);
+-
+-      // log each file and directory
+-      File root = _store->openRead(path);
+-      if (is_fs2 == false) {
+-        if (root) {
+-          File file = root.openNextFile();
+-          while (file) {
+-            if (file.isDirectory()) {
+-              Serial.printf("[dir]  UserData%s/%s\n", path, file.name());
+-            } else {
+-              Serial.printf("[file] UserData%s/%s (%d bytes)\n", path, file.name(), file.size());
+-            }
+-            // move to next file
+-            file = root.openNextFile();
++  } else if (strcmp(command, "rebuild") == 0) {
++    bool success = _store->formatFileSystem();
++    if (success) {
++      _store->saveMainIdentity(self_id);
++      savePrefs();
++      saveContacts();
++      saveChannels();
++      out.println("  > erase and rebuild done");
++    } else {
++      out.println("  Error: erase failed");
++    }
++  } else if (strcmp(command, "erase") == 0) {
++    bool success = _store->formatFileSystem();
++    if (success) {
++      out.println("  > erase done");
++    } else {
++      out.println("  Error: erase failed");
++    }
++  } else if (memcmp(command, "ls", 2) == 0) {
++    const char *path = &command[3];
++
++    bool is_fs2 = false;
++    if (memcmp(path, "UserData/", 9) == 0) {
++      path += 8;
++    } else if (memcmp(path, "ExtraFS/", 8) == 0) {
++      path += 7;
++      is_fs2 = true;
++    }
++    out.printf("Listing files in %s\n", path);
++
++    File root = _store->openRead(path);
++    if (is_fs2 == false) {
++      if (root) {
++        File file = root.openNextFile();
++        while (file) {
++          if (file.isDirectory()) {
++            out.printf("[dir]  UserData%s/%s\n", path, file.name());
++          } else {
++            out.printf("[file] UserData%s/%s (%d bytes)\n", path, file.name(), file.size());
+           }
+-          root.close();
++          file = root.openNextFile();
+         }
++        root.close();
+       }
++    }
+ 
+-      if (is_fs2 == true || strlen(path) == 0 || strcmp(path, "/") == 0) {
+-        if (_store->getSecondaryFS() != nullptr) {
+-          File root2 = _store->openRead(_store->getSecondaryFS(), path);
+-          File file = root2.openNextFile();
+-          while (file) {
+-            if (file.isDirectory()) {
+-              Serial.printf("[dir]  ExtraFS%s/%s\n", path, file.name());
+-            } else {
+-              Serial.printf("[file] ExtraFS%s/%s (%d bytes)\n", path, file.name(), file.size());
+-            }
+-            // move to next file
+-            file = root2.openNextFile();
++    if (is_fs2 == true || strlen(path) == 0 || strcmp(path, "/") == 0) {
++      if (_store->getSecondaryFS() != nullptr) {
++        File root2 = _store->openRead(_store->getSecondaryFS(), path);
++        File file = root2.openNextFile();
++        while (file) {
++          if (file.isDirectory()) {
++            out.printf("[dir]  ExtraFS%s/%s\n", path, file.name());
++          } else {
++            out.printf("[file] ExtraFS%s/%s (%d bytes)\n", path, file.name(), file.size());
+           }
+-          root2.close();
++          file = root2.openNextFile();
+         }
++        root2.close();
+       }
+-    } else if (memcmp(cli_command, "cat", 3) == 0) {
++    }
++  } else if (memcmp(command, "cat", 3) == 0) {
++    const char *path = &command[4];
+ 
+-      // get path from command e.g: "cat /contacts3"
+-      const char *path = &cli_command[4];
+-      
++    bool is_fs2 = false;
++    if (memcmp(path, "UserData/", 9) == 0) {
++      path += 8;
++    } else if (memcmp(path, "ExtraFS/", 8) == 0) {
++      path += 7;
++      is_fs2 = true;
++    } else {
++      out.println("Invalid path provided, must start with UserData/ or ExtraFS/");
++      return;
++    }
++
++    File file = _store->openRead(path);
++    if (is_fs2 == true) {
++      file = _store->openRead(_store->getSecondaryFS(), path);
++    }
++    if (file) {
++      int file_size = file.available();
++      uint8_t buffer[file_size];
++      file.read(buffer, file_size);
++      mesh::Utils::printHex(out, buffer, file_size);
++      out.print("\n");
++      file.close();
++    }
++  } else if (memcmp(command, "rm ", 3) == 0) {
++    const char *path = &command[3];
++    if(!path || strlen(path) == 0 || strcmp(path, "/") == 0){
++      out.println("Invalid path provided");
++    } else {
+       bool is_fs2 = false;
+       if (memcmp(path, "UserData/", 9) == 0) {
+-        path += 8; // skip "UserData"
++        path += 8;
+       } else if (memcmp(path, "ExtraFS/", 8) == 0) {
+-        path += 7; // skip "ExtraFS"
++        path += 7;
+         is_fs2 = true;
+-      } else {
+-        Serial.println("Invalid path provided, must start with UserData/ or ExtraFS/");
+-        cli_command[0] = 0;
+-        return;
+-      }
+-
+-      // log file content as hex
+-      File file = _store->openRead(path);
+-      if (is_fs2 == true) {
+-        file = _store->openRead(_store->getSecondaryFS(), path);
+-      }
+-      if(file){
+-
+-        // get file content
+-        int file_size = file.available();
+-        uint8_t buffer[file_size];
+-        file.read(buffer, file_size);
+-
+-        // print hex
+-        mesh::Utils::printHex(Serial, buffer, file_size);
+-        Serial.print("\n");
+-
+-        file.close();
+-
+       }
+ 
+-    } else if (memcmp(cli_command, "rm ", 3) == 0) {
+-      // get path from command e.g: "rm /adv_blobs"
+-      const char *path = &cli_command[3];
+-      MESH_DEBUG_PRINTLN("Removing file: %s", path);
+-      // ensure path is not empty, or root dir
+-      if(!path || strlen(path) == 0 || strcmp(path, "/") == 0){
+-        Serial.println("Invalid path provided");
++      bool removed;
++      if (is_fs2) {
++        removed = _store->removeFile(_store->getSecondaryFS(), path);
+       } else {
+-      bool is_fs2 = false;
+-      if (memcmp(path, "UserData/", 9) == 0) {
+-        path += 8; // skip "UserData"
+-      } else if (memcmp(path, "ExtraFS/", 8) == 0) {
+-        path += 7; // skip "ExtraFS"
+-        is_fs2 = true;
++        removed = _store->removeFile(path);
+       }
+-
+-        // remove file
+-        bool removed;
+-        if (is_fs2) {
+-          MESH_DEBUG_PRINTLN("Removing file from ExtraFS: %s", path);
+-          removed = _store->removeFile(_store->getSecondaryFS(), path);
+-        } else {
+-          MESH_DEBUG_PRINTLN("Removing file from UserData: %s", path);
+-          removed = _store->removeFile(path);
+-        }
+-        if(removed){
+-          Serial.println("File removed");
+-        } else {
+-          Serial.println("Failed to remove file");
+-        }
+-
++      if(removed){
++        out.println("File removed");
++      } else {
++        out.println("Failed to remove file");
+       }
++    }
++  } else if (strcmp(command, "reboot") == 0) {
++    out.println("Rebooting...");
++    board.reboot();
++  } else {
++    out.println("  Error: unknown command");
++  }
++}
+ 
+-    } else if (strcmp(cli_command, "reboot") == 0) {
+-      board.reboot();  // doesn't return
+-    } else {
+-      Serial.println("  Error: unknown command");
++void MyMesh::checkCLIRescueCmd() {
++  int len = strlen(cli_command);
++  while (Serial.available() && len < sizeof(cli_command)-1) {
++    char c = Serial.read();
++    if (c != '\n') {
++      cli_command[len++] = c;
++      cli_command[len] = 0;
+     }
++    Serial.print(c);  // echo
++  }
++  if (len == sizeof(cli_command)-1) {  // command buffer full
++    cli_command[sizeof(cli_command)-1] = '\r';
++  }
++
++  if (len > 0 && cli_command[len - 1] == '\r') {  // received complete line
++    cli_command[len - 1] = 0;  // replace newline with C string null terminator
++    processConsoleCommand(Serial, cli_command);
+ 
+     cli_command[0] = 0;  // reset command buffer
+   }
+@@ -2029,6 +2031,23 @@ void MyMesh::loop() {
+     checkSerialInterface();
+   }
+ 
++  if (_console_server == NULL) {
++    initConsoleServer();
++  }
++  if (_raw_packet_server == NULL && WiFi.status() == WL_CONNECTED) {
++    _raw_packet_server = new WiFiServer(RAW_TCP_BRIDGE_PORT);
++    if (_raw_packet_server) {
++      _raw_packet_server->begin();
++      for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
++        _raw_rx_pos[i] = 0;
++      }
++      MESH_DEBUG_PRINTLN("Raw packet server started on port %d", RAW_TCP_BRIDGE_PORT);
++    }
++  }
++
++  handleRawPacketServer();
++  handleConsoleServer();
++
+   // is there are pending dirty contacts write needed?
+   if (dirty_contacts_expiry && millisHasNowPassed(dirty_contacts_expiry)) {
+     saveContacts();
+@@ -2054,3 +2073,278 @@ bool MyMesh::advert() {
+     return false;
+   }
+ }
++
++void MyMesh::initConsoleServer() {
++  if (_console_server != NULL) return;
++  if (WiFi.status() != WL_CONNECTED) return;
++
++  _console_server = new WiFiServer(CONSOLE_PORT);
++  if (_console_server) {
++    _console_server->begin();
++    _console_server->setNoDelay(true);
++    MESH_DEBUG_PRINTLN("Console server started on port %d", CONSOLE_PORT);
++  }
++}
++
++void MyMesh::handleConsoleServer() {
++  if (_console_server == NULL) return;
++
++  if (!_console_client.connected()) {
++    if (_console_client) {
++      _console_client.stop();
++    }
++
++    WiFiClient incoming = _console_server->available();
++    if (incoming) {
++      _console_client = incoming;
++      _console_cmd_len = 0;
++      _console_cmd[0] = 0;
++      _console_client.print("MeshCore companion console\r\n> ");
++      MESH_DEBUG_PRINTLN("Console client connected");
++    }
++    return;
++  }
++
++  while (_console_client.available()) {
++    int c = _console_client.read();
++    if (c < 0) break;
++    char ch = (char)c;
++
++    if (ch == '\b' || ch == 0x7F) {
++      if (_console_cmd_len > 0) {
++        _console_cmd_len--;
++        _console_cmd[_console_cmd_len] = 0;
++        _console_client.print("\b \b");
++      }
++      continue;
++    }
++
++    if (ch == '\n') {
++      if (_console_cmd_len == 0) {
++        continue;
++      }
++      ch = '\r';
++    }
++
++    if (_console_cmd_len < (int)sizeof(_console_cmd) - 1 && ch != '\r') {
++      _console_cmd[_console_cmd_len++] = ch;
++      _console_cmd[_console_cmd_len] = 0;
++      _console_client.write((uint8_t)ch);
++    }
++
++    if (ch == '\r' || _console_cmd_len == (int)sizeof(_console_cmd) - 1) {
++      _console_client.print("\r\n");
++      processConsoleCommand(_console_client, _console_cmd);
++      _console_cmd_len = 0;
++      _console_cmd[0] = 0;
++      if (_console_client.connected()) {
++        _console_client.print("> ");
++      }
++    }
++  }
++}
++
++void MyMesh::handleRawPacketServer() {
++  if (_raw_packet_server == NULL) return;
++
++  if (_raw_packet_server->hasClient()) {
++    WiFiClient new_client = _raw_packet_server->available();
++    if (new_client) {
++      bool added = false;
++      for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
++        if (!_raw_packet_clients[i] || !_raw_packet_clients[i].connected()) {
++          _raw_packet_clients[i] = new_client;
++          _raw_rx_pos[i] = 0;
++          MESH_DEBUG_PRINTLN("Raw packet client %d connected", i);
++          added = true;
++          break;
++        }
++      }
++      if (!added) {
++        MESH_DEBUG_PRINTLN("Max TCP clients reached, rejecting connection");
++        new_client.stop();
++      }
++    }
++  }
++
++  for (int client_idx = 0; client_idx < MAX_TCP_CLIENTS; client_idx++) {
++    WiFiClient &client = _raw_packet_clients[client_idx];
++    if (!client || !client.connected()) {
++      if (client) {
++        client.stop();
++        _raw_rx_pos[client_idx] = 0;
++      }
++      continue;
++    }
++
++    while (client.available()) {
++      if (_raw_rx_pos[client_idx] >= (int)sizeof(_raw_rx_buffer[client_idx])) {
++        memcpy(_raw_rx_buffer[client_idx], _raw_rx_buffer[client_idx] + 256,
++               sizeof(_raw_rx_buffer[client_idx]) - 256);
++        _raw_rx_pos[client_idx] = sizeof(_raw_rx_buffer[client_idx]) - 256;
++      }
++
++      int byte = client.read();
++      if (byte < 0) continue;
++      if (byte == '\n' || byte == '\r') continue;
++
++      _raw_rx_buffer[client_idx][_raw_rx_pos[client_idx]++] = (uint8_t)byte;
++
++      if (_raw_rx_pos[client_idx] >= 6) {
++        uint16_t magic = (_raw_rx_buffer[client_idx][0] << 8) | _raw_rx_buffer[client_idx][1];
++        if (magic == 0xC03E) {
++          uint16_t length = (_raw_rx_buffer[client_idx][2] << 8) | _raw_rx_buffer[client_idx][3];
++          int total_frame_size = 6 + length;
++
++          if (_raw_rx_pos[client_idx] >= total_frame_size) {
++            mesh::Packet *pkt = NULL;
++            if (parseRS232BridgePacket(_raw_rx_buffer[client_idx], total_frame_size, pkt)) {
++              if (pkt) {
++                MESH_DEBUG_PRINTLN("Injecting virtual packet to mesh (FLOOD mode) [RS232 client %d]", client_idx);
++                displayReceivedPacket(pkt);
++                sendFlood(pkt);
++              }
++            } else {
++              MESH_DEBUG_PRINTLN("Failed to parse RS232Bridge packet (client %d)", client_idx);
++            }
++
++            memcpy(_raw_rx_buffer[client_idx], _raw_rx_buffer[client_idx] + total_frame_size,
++                   _raw_rx_pos[client_idx] - total_frame_size);
++            _raw_rx_pos[client_idx] -= total_frame_size;
++          }
++        } else {
++          _raw_rx_pos[client_idx] = 0;
++        }
++      }
++    }
++  }
++}
++
++bool MyMesh::parseRS232BridgePacket(const uint8_t *data, int len, mesh::Packet*& pkt_out) {
++  pkt_out = NULL;
++  if (len < 6) return false;
++
++  uint16_t magic = (data[0] << 8) | data[1];
++  if (magic != 0xC03E) {
++    MESH_DEBUG_PRINTLN("Invalid magic: 0x%04X", magic);
++    return false;
++  }
++
++  uint16_t payload_len = (data[2] << 8) | data[3];
++  if (len != 6 + payload_len) {
++    MESH_DEBUG_PRINTLN("Length mismatch: expected %d, got %d", 6 + payload_len, len);
++    return false;
++  }
++
++  uint16_t received_checksum = (data[4 + payload_len] << 8) | data[5 + payload_len];
++  uint16_t sum1 = 0, sum2 = 0;
++  const uint8_t *payload = data + 4;
++  for (int i = 0; i < payload_len; i++) {
++    sum1 = (sum1 + payload[i]) % 255;
++    sum2 = (sum2 + sum1) % 255;
++  }
++  uint16_t calculated_checksum = (sum2 << 8) | sum1;
++
++  if (calculated_checksum != received_checksum) {
++    MESH_DEBUG_PRINTLN("Checksum mismatch: expected 0x%04X, got 0x%04X", calculated_checksum, received_checksum);
++    return false;
++  }
++
++  pkt_out = _mgr->allocNew();
++  if (!pkt_out) {
++    MESH_DEBUG_PRINTLN("Failed to allocate packet");
++    return false;
++  }
++
++  if (!pkt_out->readFrom(payload, payload_len)) {
++    MESH_DEBUG_PRINTLN("Failed to read packet data (payload_len=%d)", payload_len);
++    _mgr->free(pkt_out);
++    pkt_out = NULL;
++    return false;
++  }
++
++  MESH_DEBUG_PRINTLN("Parsed RS232Bridge packet: %d bytes", payload_len);
++  return true;
++}
++
++void MyMesh::displayReceivedPacket(const mesh::Packet *pkt) {
++  if (pkt == NULL) return;
++
++  Serial.printf("\n===========================================================\n");
++  Serial.printf("PACKET FROM TCP (%d)\n", RAW_TCP_BRIDGE_PORT);
++  Serial.printf("===========================================================\n");
++  Serial.printf("Header:       0x%02X\n", pkt->header);
++  Serial.printf("  Route:      0x%02X\n", pkt->getRouteType());
++  Serial.printf("  Type:       0x%02X\n", pkt->getPayloadType());
++  Serial.printf("  Version:    0x%02X\n", pkt->getPayloadVer());
++  Serial.printf("Path length:  %d bytes\n", pkt->path_len);
++  Serial.printf("Payload len:  %d bytes\n", pkt->payload_len);
++  Serial.printf("===========================================================\n\n");
++}
++
++void MyMesh::sendPacketToTcpClients(const mesh::Packet *pkt) {
++  if (pkt == NULL) return;
++  uint8_t packet_buffer[256];
++  uint8_t packet_len = pkt->writeTo(packet_buffer);
++  sendRS232BridgeFrameToTcp(packet_buffer, packet_len);
++}
++
++void MyMesh::logPacketSummary(const mesh::Packet *pkt, const char *tag) {
++  if (pkt == NULL) return;
++  const char *label = tag ? tag : "PKT";
++  Serial.printf("[BRIDGE] %s route=0x%02X type=0x%02X len=%d path=%d\n",
++           label,
++           pkt->getRouteType(),
++           pkt->getPayloadType(),
++           pkt->payload_len,
++           pkt->path_len);
++}
++
++void MyMesh::dumpHexLine(const char *tag, const uint8_t *buf, int len) {
++  if (!buf || len <= 0) return;
++  const char *label = tag ? tag : "HEX";
++  Serial.printf("[BRIDGE] %s len=%d data=", label, len);
++  int max_bytes = (len > 64) ? 64 : len;
++  for (int i = 0; i < max_bytes; i++) {
++    Serial.printf("%02X", buf[i]);
++    if (i != max_bytes - 1) Serial.print(' ');
++  }
++  if (len > max_bytes) Serial.print(" ...");
++  Serial.println();
++}
++
++void MyMesh::sendRS232BridgeFrameToTcp(const uint8_t *payload, int len) {
++  if (!payload || len <= 0) return;
++  if (len + 6 > 520) return;
++
++  uint8_t frame[520];
++  frame[0] = 0xC0;
++  frame[1] = 0x3E;
++  frame[2] = (uint8_t)((len >> 8) & 0xFF);
++  frame[3] = (uint8_t)(len & 0xFF);
++  memcpy(&frame[4], payload, len);
++
++  uint16_t sum1 = 0, sum2 = 0;
++  for (int i = 0; i < len; i++) {
++    sum1 = (sum1 + payload[i]) % 255;
++    sum2 = (sum2 + sum1) % 255;
++  }
++  frame[4 + len] = (uint8_t)(sum2 & 0xFF);
++  frame[5 + len] = (uint8_t)(sum1 & 0xFF);
++
++  int frame_len = 6 + len;
++  int sent_count = 0;
++  for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
++    if (_raw_packet_clients[i] && _raw_packet_clients[i].connected()) {
++      int bytes_sent = _raw_packet_clients[i].write(frame, frame_len);
++      _raw_packet_clients[i].write((uint8_t)'\n');
++      if (bytes_sent == frame_len) {
++        sent_count++;
++      }
++    }
++  }
++
++  if (sent_count > 0) {
++    MESH_DEBUG_PRINTLN("TCP TX (RS232): %d bytes + \\n to %d clients", frame_len, sent_count);
++  }
++}
+diff --git a/examples/companion_radio/MyMesh.h b/examples/companion_radio/MyMesh.h
+index 4d77b5ab..f39cf984 100644
+--- a/examples/companion_radio/MyMesh.h
++++ b/examples/companion_radio/MyMesh.h
+@@ -4,6 +4,10 @@
+ #include <Mesh.h>
+ #include "AbstractUITask.h"
+ 
++#if defined(ESP32)
++#include <WiFi.h>
++#endif
++
+ /*------------ Frame Protocol --------------*/
+ #define FIRMWARE_VER_CODE 10
+ 
+@@ -12,7 +16,15 @@
+ #endif
+ 
+ #ifndef FIRMWARE_VERSION
+-#define FIRMWARE_VERSION "v1.14.0"
++#define FIRMWARE_VERSION "v1.14.0-heltec-zmo"
++#endif
++
++#ifndef CONSOLE_PORT
++#define CONSOLE_PORT 5001
++#endif
++
++#ifndef RAW_TCP_BRIDGE_PORT
++#define RAW_TCP_BRIDGE_PORT 5002
+ #endif
+ 
+ #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
+@@ -178,9 +190,19 @@ private:
+     return _store->putBlobByKey(key, key_len, src_buf, len);
+   }
+ 
++  void processConsoleCommand(Stream& out, char* command);
+   void checkCLIRescueCmd();
+   void checkSerialInterface();
+   bool isValidClientRepeatFreq(uint32_t f) const;
++  void initConsoleServer();
++  void handleConsoleServer();
++  void handleRawPacketServer();
++  bool parseRS232BridgePacket(const uint8_t *data, int len, mesh::Packet*& pkt_out);
++  void displayReceivedPacket(const mesh::Packet *pkt);
++  void sendPacketToTcpClients(const mesh::Packet *pkt);
++  void logPacketSummary(const mesh::Packet *pkt, const char *tag);
++  void dumpHexLine(const char *tag, const uint8_t *buf, int len);
++  void sendRS232BridgeFrameToTcp(const uint8_t *payload, int len);
+ 
+   // helpers, short-cuts
+   void saveChannels() { _store->saveChannels(this); }
+@@ -209,6 +231,16 @@ private:
+ 
+   TransportKey send_scope;
+ 
++  #define MAX_TCP_CLIENTS 4
++  WiFiServer *_console_server;
++  WiFiClient _console_client;
++  char _console_cmd[80];
++  int _console_cmd_len;
++  WiFiServer *_raw_packet_server;
++  WiFiClient _raw_packet_clients[MAX_TCP_CLIENTS];
++  uint8_t _raw_rx_buffer[MAX_TCP_CLIENTS][512];
++  int _raw_rx_pos[MAX_TCP_CLIENTS];
++
+   uint8_t cmd_frame[MAX_FRAME_SIZE + 1];
+   uint8_t out_frame[MAX_FRAME_SIZE + 1];
+   CayenneLPP telemetry;
+diff --git a/examples/companion_radio/main.cpp b/examples/companion_radio/main.cpp
+index eff9efca..26a469da 100644
+--- a/examples/companion_radio/main.cpp
++++ b/examples/companion_radio/main.cpp
+@@ -105,6 +105,64 @@ void halt() {
+   while (1) ;
+ }
+ 
++#if defined(ESP32) && defined(WIFI_SSID)
++static wl_status_t last_wifi_status = WL_IDLE_STATUS;
++static bool wifi_boot_hint_printed = false;
++static bool wifi_ready_printed = false;
++
++static const char* wifiStatusLabel(wl_status_t status) {
++  switch (status) {
++    case WL_IDLE_STATUS:
++      return "idle";
++    case WL_NO_SSID_AVAIL:
++      return "ssid-not-found";
++    case WL_SCAN_COMPLETED:
++      return "scan-complete";
++    case WL_CONNECTED:
++      return "connected";
++    case WL_CONNECT_FAILED:
++      return "connect-failed";
++    case WL_CONNECTION_LOST:
++      return "connection-lost";
++    case WL_DISCONNECTED:
++      return "disconnected";
++    default:
++      return "unknown";
++  }
++}
++
++static void reportWifiBootStatus() {
++  if (!wifi_boot_hint_printed) {
++    Serial.printf("[WIFI] Boot: connecting to SSID '%s' as STA using DHCP\n", WIFI_SSID);
++    Serial.printf("[WIFI] Native WiFi interface will listen on port %d after WiFi is up\n", TCP_PORT);
++    Serial.printf("[WIFI] Console will listen on port %d after WiFi is up\n", CONSOLE_PORT);
++    Serial.printf("[WIFI] Raw TCP bridge will listen on port %d after WiFi is up\n", RAW_TCP_BRIDGE_PORT);
++    wifi_boot_hint_printed = true;
++  }
++
++  wl_status_t status = WiFi.status();
++  if (status != last_wifi_status) {
++    Serial.printf("[WIFI] Status: %s\n", wifiStatusLabel(status));
++    last_wifi_status = status;
++  }
++
++  if (status == WL_CONNECTED) {
++    if (!wifi_ready_printed) {
++      String ip = WiFi.localIP().toString();
++      String ssid = WiFi.SSID();
++      Serial.printf("[WIFI] Connected to '%s'\n", ssid.c_str());
++      Serial.printf("[WIFI] DHCP address: %s\n", ip.c_str());
++      Serial.printf("[WIFI] Native interface: nc %s %d\n", ip.c_str(), TCP_PORT);
++      Serial.printf("[WIFI] Console: nc %s %d\n", ip.c_str(), CONSOLE_PORT);
++      Serial.printf("[WIFI] Connect with: nc %s %d\n", ip.c_str(), RAW_TCP_BRIDGE_PORT);
++      wifi_ready_printed = true;
++    }
++  } else {
++    wifi_ready_printed = false;
++  }
++}
++#endif
++
+ void setup() {
+   Serial.begin(115200);
+ 
+@@ -196,6 +254,7 @@ void setup() {
+ #ifdef WIFI_SSID
+   board.setInhibitSleep(true);   // prevent sleep when WiFi is active
+   WiFi.begin(WIFI_SSID, WIFI_PWD);
++  reportWifiBootStatus();
+   serial_interface.begin(TCP_PORT);
+ #elif defined(BLE_PIN_CODE)
+   serial_interface.begin(BLE_NAME_PREFIX, the_mesh.getNodePrefs()->node_name, the_mesh.getBLEPin());
+@@ -219,6 +278,9 @@ void setup() {
+ }
+ 
+ void loop() {
++#if defined(ESP32) && defined(WIFI_SSID)
++  reportWifiBootStatus();
++#endif
+   the_mesh.loop();
+   sensors.loop();
+ #ifdef DISPLAY_CLASS

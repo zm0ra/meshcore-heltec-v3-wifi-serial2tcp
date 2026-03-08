@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Heltec V3 Companion Radio WiFi + TCP Serial Builder
-# Automates: clone, patch, configure, build, upload
+# Automates: clone, patch, configure, build, erase, upload
 #
 
 set -e  # Exit on error
@@ -82,6 +82,9 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
 PATCHES_DIR="${SCRIPT_DIR}/patches"
 DEFAULT_WORK_DIR="${SCRIPT_DIR}/build"
+DEFAULT_COMPANION_BRANCH="companion-v1.14.0"
+DEFAULT_REPEATER_BRANCH="repeater-v1.14.0"
+
 # Load configuration
 if [ ! -f "$CONFIG_FILE" ]; then
     echo -e "${RED}[!] Configuration file not found: ${CONFIG_FILE}${NC}"
@@ -139,8 +142,8 @@ UPLOAD_SPEED=""
 PIO_ENV="Heltec_v3_companion_radio_wifi"
 
 # Git repository
-REPO_URL="https://github.com/ripplebiz/MeshCore"
-REPO_BRANCH="main"
+REPO_URL="https://github.com/meshcore-dev/MeshCore"
+REPO_BRANCH="companion-v1.14.0"
 
 # Optional: override build directory (default: ./build)
 # WORK_DIR="/absolute/path/to/workdir"
@@ -158,8 +161,8 @@ TCP_PORT=${TCP_PORT:-5002}
 WIFI_DEBUG_LOGGING=${WIFI_DEBUG_LOGGING:-1}
 
 # Defaults for repository source
-REPO_URL="${REPO_URL:-https://github.com/ripplebiz/MeshCore}"
-REPO_BRANCH="${REPO_BRANCH:-main}"
+REPO_URL="${REPO_URL:-https://github.com/meshcore-dev/MeshCore}"
+REPO_BRANCH="${REPO_BRANCH:-$DEFAULT_COMPANION_BRANCH}"
 
 LORA_FREQ=${LORA_FREQ:-869.618}
 LORA_BW=${LORA_BW:-62.5}
@@ -330,14 +333,17 @@ Steps:
     --upload       Upload previously built firmware (combine with --build to build+upload)
 
 Options:
+    --clean        Remove WORK_DIR before running
     --no-clone     Skip repository cloning (use existing checkout)
     --no-patch     Skip applying patches
+    --erase-flash  Erase device flash before upload (recommended when migrating from 1.11)
     --monitor      Upload and start serial monitor
     --build-only   Build without clone/patch/config steps
     --help         Show this help
 
 Examples:
     ./build.sh --build                             # Build companion
+    ./build.sh --clean --build --erase-flash --upload
     ./build.sh --repeater --build --upload         # Build repeater
     ./build.sh --build --upload                    # Build & upload companion
     ./build.sh --upload                            # Upload existing firmware
@@ -376,16 +382,12 @@ clone_repository() {
     
     if [ -d "$REPO_DIR" ]; then
         log_warn "Repository already exists at ${REPO_DIR}"
-        read -p "Remove and re-clone? [y/N] " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            rm -rf "$REPO_DIR"
-        else
-            log_info "Using existing repository"
-            cd "$REPO_DIR"
-            git pull origin "$REPO_BRANCH" || true
-            return
-        fi
+        log_info "Using existing repository"
+        cd "$REPO_DIR"
+        git fetch --tags origin || true
+        git checkout "$REPO_BRANCH" || true
+        git pull origin "$REPO_BRANCH" || true
+        return
     fi
     
     mkdir -p "$WORK_DIR"
@@ -432,10 +434,7 @@ apply_patches() {
         )
     else
         patch_files=(
-            "$PATCHES_DIR"/01-mymesh-header.patch
-            "$PATCHES_DIR"/02-mymesh-implementation.patch
-            "$PATCHES_DIR"/04-platformio-base.patch
-            "$PATCHES_DIR"/10-ui-wifi-info-screen.patch
+            "$PATCHES_DIR"/11-companion-v114-heltec-zmo.patch
         )
     fi
 
@@ -606,6 +605,41 @@ upload_firmware() {
     log_success "Firmware uploaded successfully"
 }
 
+erase_flash() {
+    local port
+    port=$(detect_upload_port)
+
+    if [ -z "$port" ]; then
+        log_error "No upload port found. Connect the device or set UPLOAD_PORT in config.env"
+        exit 1
+    fi
+
+    log_info "Erasing flash on ${port}..."
+
+    local pio_bin
+    local pio_python
+    local esptool_path
+
+    pio_bin="$(command -v pio)"
+    pio_python="$(head -n 1 "$pio_bin" | sed 's/^#!//')"
+
+    if [ ! -x "$pio_python" ]; then
+        log_error "Failed to resolve PlatformIO Python interpreter"
+        exit 1
+    fi
+
+    esptool_path="${HOME}/.platformio/packages/tool-esptoolpy/esptool.py"
+
+    if [ ! -f "$esptool_path" ]; then
+        log_error "esptool.py not found at ${esptool_path}"
+        exit 1
+    fi
+
+    "$pio_python" "$esptool_path" --chip esp32s3 --port "$port" erase_flash
+
+    log_success "Flash erased successfully"
+}
+
 monitor_serial() {
     local port
     port=$(detect_upload_port)
@@ -624,6 +658,11 @@ monitor_serial() {
 }
 
 show_summary() {
+    local firmware_label="Companion Radio (WiFi + LoRa TCP Bridge)"
+    if [ "$BUILD_ROLE" = "repeater" ]; then
+        firmware_label="Repeater (WiFi + LoRa bridge + TCP console)"
+    fi
+
     echo
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}                    Build Complete!${NC}"
@@ -631,7 +670,7 @@ show_summary() {
     echo
     echo -e "Configuration:"
     echo -e "  Device:       Heltec V3"
-    echo -e "  Firmware:     Companion Radio (WiFi + LoRa TCP Bridge)"
+    echo -e "  Firmware:     ${firmware_label}"
     echo -e "  WiFi SSID:    ${WIFI_SSID}"
     echo -e "  IP Address:   DHCP (check serial log for assigned IP)"
     echo -e "  TCP Port:     ${TCP_PORT}"
@@ -657,6 +696,8 @@ main() {
     DO_BUILD=0
     DO_UPLOAD=0
     DO_MONITOR=0
+    DO_CLEAN=0
+    DO_ERASE_FLASH=0
     
     if [[ $# -eq 0 ]]; then
         print_usage
@@ -668,6 +709,13 @@ main() {
             --repeater)
                 BUILD_ROLE="repeater"
                 PIO_ENV="Heltec_v3_repeater"
+                if [ "$REPO_BRANCH" = "$DEFAULT_COMPANION_BRANCH" ]; then
+                    REPO_BRANCH="$DEFAULT_REPEATER_BRANCH"
+                fi
+                shift
+                ;;
+            --clean)
+                DO_CLEAN=1
                 shift
                 ;;
             --build)
@@ -683,6 +731,11 @@ main() {
                 shift
                 ;;
             --upload)
+                DO_UPLOAD=1
+                shift
+                ;;
+            --erase-flash)
+                DO_ERASE_FLASH=1
                 DO_UPLOAD=1
                 shift
                 ;;
@@ -734,6 +787,11 @@ main() {
     fi
 
     check_dependencies
+
+    if [ $DO_CLEAN -eq 1 ]; then
+        log_info "Cleaning work directory ${WORK_DIR}"
+        rm -rf "$WORK_DIR"
+    fi
     
     # Only validate config if doing something
     if [ $DO_CLONE -eq 1 ] || [ $DO_PATCH -eq 1 ] || [ $DO_CONFIGURE -eq 1 ] || [ $DO_BUILD -eq 1 ]; then
@@ -750,6 +808,7 @@ main() {
         fi
     fi
     [ $DO_BUILD -eq 1 ] && build_firmware
+    [ $DO_ERASE_FLASH -eq 1 ] && erase_flash
     [ $DO_UPLOAD -eq 1 ] && upload_firmware
     
     [ $DO_MONITOR -eq 1 ] && monitor_serial
