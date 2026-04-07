@@ -94,6 +94,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 WIFI_SSID="YourNetwork"
 WIFI_PASSWORD="YourPassword"
 TCP_PORT=5002
+CONSOLE_PORT=5001
 WIFI_DEBUG_LOGGING=1
 
 # LoRa radio flags
@@ -120,6 +121,11 @@ MESH_PACKET_LOGGING=1
 MESH_DEBUG=1
 BRIDGE_DEBUG=0
 BLE_DEBUG_LOGGING=0
+
+# Build orchestration
+FIRMWARE_VERSION="dev"
+EXTRA_BUILD_FLAGS=""
+ENABLE_CONSOLE_MIRROR_PATCH=0
 
 # Identity / advertising
 ADVERT_NAME="Heltec V3 WiFi"
@@ -158,6 +164,7 @@ source "$CONFIG_FILE"
 WIFI_SSID="${WIFI_SSID:-YourNetwork}"
 WIFI_PASSWORD="${WIFI_PASSWORD:-YourPassword}"
 TCP_PORT=${TCP_PORT:-5002}
+CONSOLE_PORT=${CONSOLE_PORT:-5001}
 WIFI_DEBUG_LOGGING=${WIFI_DEBUG_LOGGING:-1}
 
 # Defaults for repository source
@@ -184,6 +191,9 @@ MESH_PACKET_LOGGING=${MESH_PACKET_LOGGING:-1}
 MESH_DEBUG=${MESH_DEBUG:-1}
 BRIDGE_DEBUG=${BRIDGE_DEBUG:-0}
 BLE_DEBUG_LOGGING=${BLE_DEBUG_LOGGING:-0}
+FIRMWARE_VERSION="${FIRMWARE_VERSION:-dev}"
+EXTRA_BUILD_FLAGS="${EXTRA_BUILD_FLAGS:-}"
+ENABLE_CONSOLE_MIRROR_PATCH=${ENABLE_CONSOLE_MIRROR_PATCH:-0}
 
 ADVERT_NAME="${ADVERT_NAME:-Heltec V3 WiFi}"
 ADVERT_LAT=${ADVERT_LAT:-0.0}
@@ -198,6 +208,9 @@ PIO_ENV="${PIO_ENV:-Heltec_v3_companion_radio_wifi}"
 # Allow overriding work directory via env or config
 WORK_DIR="${WORK_DIR:-$DEFAULT_WORK_DIR}"
 REPO_DIR="${REPO_DIR:-${WORK_DIR}/meshcore-firmware}"
+ESPTOOL_REPO_URL="${ESPTOOL_REPO_URL:-https://github.com/espressif/esptool.git}"
+ESPTOOL_DIR="${ESPTOOL_DIR:-${WORK_DIR}/tools/esptool}"
+ESPTOOL_VENV_DIR="${ESPTOOL_VENV_DIR:-${WORK_DIR}/tools/esptool-venv}"
 
 # Functions
 log_info() {
@@ -214,6 +227,15 @@ log_warn() {
 
 log_error() {
     echo -e "${RED}[✗]${NC} $1"
+}
+
+enforce_repeater_profile() {
+    if [ "${BUILD_ROLE}" != "repeater" ]; then
+        return
+    fi
+
+    MESH_PACKET_LOGGING=1
+    log_info "Repeater profile active: forcing MESH_PACKET_LOGGING=1"
 }
 
 validate_config() {
@@ -312,6 +334,137 @@ detect_upload_port() {
     echo ""
 }
 
+escape_sed_replacement() {
+    printf '%s' "$1" | sed 's/[&|]/\\&/g'
+}
+
+sync_firmware_metadata_headers() {
+    local build_date
+    local firmware_version
+    local esc_build_date
+    local esc_firmware_version
+    local header
+    local headers
+
+    build_date="$(date '+%d %b %Y')"
+    firmware_version="${FIRMWARE_VERSION}"
+    esc_build_date="$(escape_sed_replacement "$build_date")"
+    esc_firmware_version="$(escape_sed_replacement "$firmware_version")"
+
+    headers=(
+        "${REPO_DIR}/examples/simple_repeater/MyMesh.h"
+        "${REPO_DIR}/examples/companion_radio/MyMesh.h"
+        "${REPO_DIR}/examples/simple_room_server/MyMesh.h"
+        "${REPO_DIR}/examples/simple_sensor/SensorMesh.h"
+    )
+
+    for header in "${headers[@]}"; do
+        if [ ! -f "$header" ]; then
+            continue
+        fi
+
+        sed -i.bak -E "s|^([[:space:]]*#define[[:space:]]+FIRMWARE_BUILD_DATE[[:space:]]+).*$|\\1\"${esc_build_date}\"|" "$header"
+        sed -i.bak -E "s|^([[:space:]]*#define[[:space:]]+FIRMWARE_VERSION[[:space:]]+).*$|\\1\"${esc_firmware_version}\"|" "$header"
+        rm -f "${header}.bak"
+    done
+}
+
+find_bootstrap_python() {
+    local candidates=()
+    local py
+
+    if command -v python3 >/dev/null 2>&1; then
+        candidates+=("$(command -v python3)")
+    fi
+    [ -x /usr/local/bin/python3 ] && candidates+=("/usr/local/bin/python3")
+    [ -x /opt/homebrew/bin/python3 ] && candidates+=("/opt/homebrew/bin/python3")
+    [ -x /usr/bin/python3 ] && candidates+=("/usr/bin/python3")
+
+    for py in "${candidates[@]}"; do
+        if "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+            echo "$py"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+ensure_latest_github_esptool() {
+    local tools_parent
+    local pybin
+    tools_parent="$(dirname "$ESPTOOL_DIR")"
+
+    pybin="$(find_bootstrap_python)" || {
+        log_error "Python >= 3.10 is required to bootstrap esptool from GitHub"
+        return 1
+    }
+
+    if [ "$pybin" != "$(command -v python3 2>/dev/null || true)" ]; then
+        log_info "Using Python interpreter for esptool bootstrap: $pybin"
+    fi
+
+    mkdir -p "$tools_parent"
+
+    if [ -d "${ESPTOOL_DIR}/.git" ]; then
+        log_info "Updating local esptool clone..."
+        if ! git -C "$ESPTOOL_DIR" pull --ff-only >/dev/null 2>&1; then
+            log_warn "Could not fast-forward esptool clone; using current checkout"
+        fi
+    else
+        if [ -d "$ESPTOOL_DIR" ]; then
+            log_error "ESPTOOL_DIR exists but is not a git checkout: ${ESPTOOL_DIR}"
+            log_error "Remove it manually or set ESPTOOL_DIR to a different path."
+            return 1
+        fi
+        log_info "Cloning latest esptool from GitHub..."
+        git clone --depth 1 "$ESPTOOL_REPO_URL" "$ESPTOOL_DIR"
+    fi
+
+    if [ -d "$ESPTOOL_VENV_DIR" ]; then
+        if ! "${ESPTOOL_VENV_DIR}/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+            log_warn "Existing esptool venv uses Python < 3.10; recreating..."
+            rm -rf "$ESPTOOL_VENV_DIR"
+        fi
+    fi
+
+    if [ ! -d "$ESPTOOL_VENV_DIR" ]; then
+        log_info "Creating local Python venv for esptool..."
+        "$pybin" -m venv "$ESPTOOL_VENV_DIR"
+    fi
+
+    log_info "Installing/updating esptool dependencies..."
+    "${ESPTOOL_VENV_DIR}/bin/python" -m pip install --upgrade pip >/dev/null
+    "${ESPTOOL_VENV_DIR}/bin/python" -m pip install --upgrade "${ESPTOOL_DIR}" >/dev/null
+
+    if [ ! -f "${ESPTOOL_DIR}/esptool.py" ]; then
+        log_error "Bootstrapped esptool is missing script: ${ESPTOOL_DIR}/esptool.py"
+        return 1
+    fi
+}
+
+flash_merged_image() {
+    local port="$1"
+    local merged_path="$2"
+
+    if command -v esptool >/dev/null 2>&1; then
+        log_info "Flashing merged image with system esptool (no rebuild)..."
+        esptool --chip esp32s3 --port "$port" --baud 460800 write_flash -z 0x0 "$merged_path"
+        return
+    fi
+
+    if command -v esptool.py >/dev/null 2>&1; then
+        log_info "Flashing merged image with system esptool.py (no rebuild)..."
+        esptool.py --chip esp32s3 --port "$port" --baud 460800 write_flash -z 0x0 "$merged_path"
+        return
+    fi
+
+    log_warn "esptool not found in PATH; bootstrapping latest esptool from GitHub..."
+    ensure_latest_github_esptool
+    log_info "Flashing merged image with bootstrapped esptool (no rebuild)..."
+    "${ESPTOOL_VENV_DIR}/bin/python" "${ESPTOOL_DIR}/esptool.py" --chip esp32s3 --port "$port" --baud 460800 write_flash -z 0x0 "$merged_path"
+}
+
 print_header() {
     echo -e "${BLUE}"
     echo "═══════════════════════════════════════════════════════════════"
@@ -336,6 +489,8 @@ Options:
     --clean        Remove WORK_DIR before running
     --no-clone     Skip repository cloning (use existing checkout)
     --no-patch     Skip applying patches
+    --with-console-mirror
+                  Repeater only: apply optional console mirror patches (TCP 5003)
     --erase-flash  Erase device flash before upload (recommended when migrating from 1.11)
     --monitor      Upload and start serial monitor
     --build-only   Build without clone/patch/config steps
@@ -345,6 +500,7 @@ Examples:
     ./build.sh --build                             # Build companion
     ./build.sh --clean --build --erase-flash --upload
     ./build.sh --repeater --build --upload         # Build repeater
+    ./build.sh --repeater --build --with-console-mirror --upload
     ./build.sh --build --upload                    # Build & upload companion
     ./build.sh --upload                            # Upload existing firmware
 EOF
@@ -401,14 +557,22 @@ clone_repository() {
 
 apply_patch_file() {
     local patch_file="$1"
-    log_info "Applying $(basename "$patch_file")..."
+    local optional="${2:-0}"
+    local patch_name
+    patch_name="$(basename "$patch_file")"
+
+    log_info "Applying ${patch_name}..."
     if git apply --check "$patch_file" >/dev/null 2>&1; then
         git apply "$patch_file"
     elif git apply -R --check "$patch_file" >/dev/null 2>&1; then
-        log_warn "Patch $(basename "$patch_file") already applied - skipping"
+        log_warn "Patch ${patch_name} already applied - skipping"
     else
-        log_error "Patch $(basename "$patch_file") failed to apply"
-        exit 1
+        if [ "$optional" = "1" ]; then
+            log_warn "Patch ${patch_name} skipped (optional/overlapping on current upstream)"
+        else
+            log_error "Patch ${patch_name} failed to apply"
+            exit 1
+        fi
     fi
 }
 
@@ -420,32 +584,45 @@ apply_patches() {
     # Apply patches non-interactively.
     # IMPORTANT: apply only patches relevant to the selected BUILD_ROLE to avoid
     # unrelated patch failures when upstream MeshCore changes.
-    local patch_files=()
+    local patch_file
 
     if [ "$BUILD_ROLE" = "repeater" ]; then
-        patch_files=(
-            "$PATCHES_DIR"/04-platformio-base.patch
-            "$PATCHES_DIR"/06-simple-repeater-platformio.patch
-            "$PATCHES_DIR"/07-simple-repeater-wifi-tcp.patch
-            "$PATCHES_DIR"/07b-simple-repeater-wifi-tcp-header.patch
-            "$PATCHES_DIR"/08-add-wifi-macros-defaults.patch
-            "$PATCHES_DIR"/09-simple-repeater-tcp-console-header.patch
-            "$PATCHES_DIR"/09b-simple-repeater-tcp-console.patch
-        )
-    else
-        patch_files=(
-            "$PATCHES_DIR"/11-companion-v114-heltec-zmo.patch
-        )
-    fi
+        patch_file="$PATCHES_DIR/04-platformio-base.patch"
+        [ -f "$patch_file" ] || { log_error "Missing patch file: $(basename "$patch_file")"; exit 1; }
+        apply_patch_file "$patch_file" 1
 
-    for patch_file in "${patch_files[@]}"; do
-        if [ -f "$patch_file" ]; then
-            apply_patch_file "$patch_file"
+        patch_file="$PATCHES_DIR/06-simple-repeater-platformio.patch"
+        [ -f "$patch_file" ] || { log_error "Missing patch file: $(basename "$patch_file")"; exit 1; }
+        apply_patch_file "$patch_file" 0
+
+        patch_file="$PATCHES_DIR/07-simple-repeater-wifi-tcp.patch"
+        [ -f "$patch_file" ] || { log_error "Missing patch file: $(basename "$patch_file")"; exit 1; }
+        apply_patch_file "$patch_file" 0
+
+        patch_file="$PATCHES_DIR/07b-simple-repeater-wifi-tcp-header.patch"
+        [ -f "$patch_file" ] || { log_error "Missing patch file: $(basename "$patch_file")"; exit 1; }
+        apply_patch_file "$patch_file" 0
+
+        patch_file="$PATCHES_DIR/08-add-wifi-macros-defaults.patch"
+        [ -f "$patch_file" ] || { log_error "Missing patch file: $(basename "$patch_file")"; exit 1; }
+        apply_patch_file "$patch_file" 0
+
+        if [ "${ENABLE_CONSOLE_MIRROR_PATCH}" = "1" ]; then
+            patch_file="$PATCHES_DIR/09-simple-repeater-tcp-console-header.patch"
+            [ -f "$patch_file" ] || { log_error "Missing patch file: $(basename "$patch_file")"; exit 1; }
+            apply_patch_file "$patch_file" 1
+
+            patch_file="$PATCHES_DIR/09b-simple-repeater-tcp-console.patch"
+            [ -f "$patch_file" ] || { log_error "Missing patch file: $(basename "$patch_file")"; exit 1; }
+            apply_patch_file "$patch_file" 1
         else
-            log_error "Missing patch file: $(basename "$patch_file")"
-            exit 1
+            log_info "Skipping console mirror patches (set ENABLE_CONSOLE_MIRROR_PATCH=1 or pass --with-console-mirror)"
         fi
-    done
+    else
+        patch_file="$PATCHES_DIR/11-companion-v114-heltec-zmo.patch"
+        [ -f "$patch_file" ] || { log_error "Missing patch file: $(basename "$patch_file")"; exit 1; }
+        apply_patch_file "$patch_file" 0
+    fi
 
     log_success "Patches applied"
 }
@@ -483,12 +660,15 @@ configure_build_flags() {
     if [ ! -f "${config_file}.orig" ]; then
         cp "$config_file" "${config_file}.orig"
     fi
+    sync_firmware_metadata_headers
 
     # WiFi
     sed -i.bak "s|-D WIFI_SSID='\"[^\"]*\"'|-D WIFI_SSID='\"${WIFI_SSID}\"'|" "$config_file"
     sed -i.bak "s|-D WIFI_PWD='\"[^\"]*\"'|-D WIFI_PWD='\"${WIFI_PASSWORD}\"'|" "$config_file"
     sed -i.bak "s|-D WIFI_PASSWORD='\"[^\"]*\"'|-D WIFI_PASSWORD='\"${WIFI_PASSWORD}\"'|" "$config_file"
     sed -i.bak "s|-D TCP_PORT=[^ ]*|-D TCP_PORT=${TCP_PORT}|" "$config_file"
+    sed -E -i.bak "s|^[[:space:]]*;[[:space:]]*-D[[:space:]]+CONSOLE_PORT=[^ ]+|  -D CONSOLE_PORT=${CONSOLE_PORT}|" "$config_file"
+    sed -E -i.bak "s|^[[:space:]]*-D[[:space:]]+CONSOLE_PORT=[^ ]+|  -D CONSOLE_PORT=${CONSOLE_PORT}|" "$config_file"
     sed -i.bak "s|-D WIFI_DEBUG_LOGGING=[^ ]*|-D WIFI_DEBUG_LOGGING=${WIFI_DEBUG_LOGGING}|" "$config_file"
 
     # Upload stability
@@ -552,11 +732,13 @@ configure_repeater_build_flags() {
     if [ ! -f "${config_file}.orig" ]; then
         cp "$config_file" "${config_file}.orig"
     fi
+    sync_firmware_metadata_headers
 
     # WiFi
     sed -i.bak "s|-D WIFI_SSID=\"[^\"]*\"|-D WIFI_SSID=\"${WIFI_SSID}\"|" "$config_file"
     sed -i.bak "s|-D WIFI_PWD=\"[^\"]*\"|-D WIFI_PWD=\"${WIFI_PASSWORD}\"|" "$config_file"
     sed -i.bak "s|-D TCP_PORT=[^ ]*|-D TCP_PORT=${TCP_PORT}|" "$config_file"
+    sed -i.bak "s|-D CONSOLE_PORT=[^ ]*|-D CONSOLE_PORT=${CONSOLE_PORT}|" "$config_file"
     sed -i.bak "s|-D ADMIN_PASSWORD=\"[^\"]*\"|-D ADMIN_PASSWORD=\"${ADMIN_PASSWORD}\"|" "$config_file"
     sed -i.bak "s|-D GUEST_PASSWORD=\"[^\"]*\"|-D GUEST_PASSWORD=\"${GUEST_PASSWORD}\"|" "$config_file"
     sed -i.bak "s|-D ADVERT_NAME=\"[^\"]*\"|-D ADVERT_NAME=\"${ADVERT_NAME}\"|" "$config_file"
@@ -576,20 +758,71 @@ configure_repeater_build_flags() {
 
 build_firmware() {
     log_info "Building firmware for ${PIO_ENV}..."
+    local runtime_flags
+    runtime_flags="${EXTRA_BUILD_FLAGS:-}"
     
     cd "$REPO_DIR"
     
     # Clean previous build
-    pio run -e "$PIO_ENV" --target clean
+    if [ -n "$runtime_flags" ]; then
+        PLATFORMIO_BUILD_FLAGS="$runtime_flags" pio run -e "$PIO_ENV" --target clean
+    else
+        pio run -e "$PIO_ENV" --target clean
+    fi
     
     # Build
-    pio run -e "$PIO_ENV"
+    if [ -n "$runtime_flags" ]; then
+        PLATFORMIO_BUILD_FLAGS="$runtime_flags" pio run -e "$PIO_ENV"
+    else
+        pio run -e "$PIO_ENV"
+    fi
+
+    generate_merged_firmware
     
     log_success "Firmware built successfully"
 }
 
+generate_merged_firmware() {
+    local build_dir
+    local firmware_path
+    local merged_path
+    local runtime_flags
+    runtime_flags="${EXTRA_BUILD_FLAGS:-}"
+
+    build_dir="${REPO_DIR}/.pio/build/${PIO_ENV}"
+    firmware_path="${build_dir}/firmware.bin"
+    merged_path="${build_dir}/firmware-merged.bin"
+
+    if [ ! -f "$firmware_path" ]; then
+        log_warn "Skipping merged image generation because firmware.bin is missing"
+        return
+    fi
+
+    log_info "Generating merged flash image for ${PIO_ENV}..."
+    cd "$REPO_DIR"
+
+    if [ -n "$runtime_flags" ]; then
+        if ! PLATFORMIO_BUILD_FLAGS="$runtime_flags" pio run -e "$PIO_ENV" -t mergebin >/dev/null; then
+            log_warn "Merged image target failed; use bootloader.bin + partitions.bin + firmware.bin for manual flashing"
+            return
+        fi
+    elif ! pio run -e "$PIO_ENV" -t mergebin >/dev/null; then
+        log_warn "Merged image target failed; use bootloader.bin + partitions.bin + firmware.bin for manual flashing"
+        return
+    fi
+
+    if [ -f "$merged_path" ]; then
+        log_success "Merged flash image ready: ${merged_path}"
+    else
+        log_warn "Merged image target completed but ${merged_path} was not created"
+    fi
+}
+
 upload_firmware() {
     local port
+    local build_dir
+    local firmware_path
+    local merged_path
     port=$(detect_upload_port)
 
     if [ -z "$port" ]; then
@@ -598,9 +831,27 @@ upload_firmware() {
     fi
 
     log_info "Uploading firmware to ${port}..."
-    
-    cd "$REPO_DIR"
-    pio run -e "$PIO_ENV" -t upload --upload-port "$port"
+
+    build_dir="${REPO_DIR}/.pio/build/${PIO_ENV}"
+    firmware_path="${build_dir}/firmware.bin"
+    merged_path="${build_dir}/firmware-merged.bin"
+
+    if [ ! -f "$firmware_path" ]; then
+        log_error "Firmware artifact missing: ${firmware_path}. Run with --build first."
+        exit 1
+    fi
+
+    if [ ! -f "$merged_path" ]; then
+        log_warn "Merged image missing, generating it now..."
+        generate_merged_firmware
+    fi
+
+    if [ ! -f "$merged_path" ]; then
+        log_error "Merged image is still missing: ${merged_path}"
+        exit 1
+    fi
+
+    flash_merged_image "$port" "$merged_path"
     
     log_success "Firmware uploaded successfully"
 }
@@ -673,7 +924,15 @@ show_summary() {
     echo -e "  Firmware:     ${firmware_label}"
     echo -e "  WiFi SSID:    ${WIFI_SSID}"
     echo -e "  IP Address:   DHCP (check serial log for assigned IP)"
-    echo -e "  TCP Port:     ${TCP_PORT}"
+    if [ "$BUILD_ROLE" = "repeater" ]; then
+        echo -e "  TCP Port:     ${TCP_PORT} (serial@tcp / raw packet stream)"
+        echo -e "  Console Port: ${CONSOLE_PORT} (repeater configuration/admin console)"
+        echo -e "  Mirror 5003:  $([ "${ENABLE_CONSOLE_MIRROR_PATCH}" = "1" ] && echo enabled || echo disabled)"
+    else
+        echo -e "  TCP Port:     ${TCP_PORT} (serial@tcp endpoint)"
+        echo -e "  Console Port: ${CONSOLE_PORT} (companion console/control endpoint)"
+        echo -e "  Mirror 5003:  disabled (not used in companion)"
+    fi
     echo
     echo -e "Testing:"
     echo -e "  1. Monitor: ${BLUE}pio device monitor -p ${UPLOAD_PORT:-<auto-detect>} -b 115200${NC}"
@@ -730,6 +989,10 @@ main() {
                 DO_PATCH=0
                 shift
                 ;;
+            --with-console-mirror)
+                ENABLE_CONSOLE_MIRROR_PATCH=1
+                shift
+                ;;
             --upload)
                 DO_UPLOAD=1
                 shift
@@ -761,6 +1024,8 @@ main() {
                 ;;
         esac
     done
+
+    enforce_repeater_profile
     
     if [ $DO_BUILD -eq 1 ]; then
         [ $DO_CLONE -eq -1 ] && DO_CLONE=1

@@ -9,7 +9,7 @@ The project is ready for both local build-and-flash use and simple automation.
 - Unified wrapper flow: clone → patch → configure flags → build → erase → upload → monitor.
 - Two firmware roles:
   - **Companion**: MeshCore WiFi companion with native TCP on `5000`, text console on `5001`, raw bridge on `5002`.
-  - **Repeater**: repeater build flow through the same wrapper.
+  - **Repeater**: repeater build flow through the same wrapper, with optional console mirror on `5003` (`--with-console-mirror`).
 - Stable RS232Bridge transport (`C0 3E`, big-endian length, Fletcher-16).
 - Multi-client TCP support for the raw bridge.
 - A one-command companion installer in `install.sh`.
@@ -37,7 +37,7 @@ The project is ready for both local build-and-flash use and simple automation.
 2. Run:
 
 ```bash
-./build.sh --repeater --clean --build --erase-flash --upload
+./build.sh --repeater --clean --build --erase-flash --with-console-mirror --upload
 ```
 
 3. Use the ports exposed by the selected repeater build.
@@ -67,6 +67,11 @@ The project is ready for both local build-and-flash use and simple automation.
 ```bash
 ./build.sh --upload
 ```
+
+`--upload` flashes the already built merged image and does not trigger a second firmware build.
+By default it uses `esptool`/`esptool.py` from your `PATH`; if neither is installed, the wrapper
+automatically clones the latest `esptool` from GitHub into `build/tools/esptool`, creates a local
+Python virtual environment, and uses that copy for flashing.
 
 - **Build artifacts only**
 
@@ -154,6 +159,7 @@ Key options:
 - `--repeater` – switch role to repeater.
 - `--build` – run the build pipeline.
 - `--upload` – upload existing firmware, or build and upload when combined with `--build`.
+- `--with-console-mirror` – repeater only, enables optional TCP mirror on `5003`.
 - `--monitor` – start the serial monitor after upload.
 - `--clean` – remove the working directory.
 - `--no-clone` – skip upstream repo cloning.
@@ -165,7 +171,7 @@ Examples:
 
 ```bash
 ./build.sh --clean --build
-./build.sh --repeater --build --upload --monitor
+./build.sh --repeater --build --with-console-mirror --upload --monitor
 ./build.sh --build --no-clone --no-patch
 ./build.sh --upload
 ```
